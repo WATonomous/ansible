@@ -43,6 +43,8 @@ COLLECTION_PAGE_SIZE = 100
 RETRY_HTTP_ERROR_CODES = [  # TODO: Allow user-configuration
     429,  # Too Many Requests
     520,  # Galaxy rate limit error code (Cloudflare unknown error)
+    # TODO: Remove this temporary hack
+    504,  # Galaxy Gateway Timeout: https://github.com/ansible/galaxy/issues/2302#issuecomment-1047370516
 ]
 
 
