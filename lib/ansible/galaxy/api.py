@@ -16,6 +16,7 @@ import stat
 import tarfile
 import time
 import threading
+import traceback
 
 from http import HTTPStatus
 from http.client import BadStatusLine, IncompleteRead
@@ -25,7 +26,7 @@ from urllib.parse import quote as urlquote, urlencode, urlparse, parse_qs, urljo
 from ansible import constants as C
 from ansible.errors import AnsibleError
 from ansible.galaxy.user_agent import user_agent
-from ansible.module_utils.api import retry_with_delays_and_condition
+from ansible.module_utils.api import retry_with_delays_and_condition, retry_with_metadata
 from ansible.module_utils.api import generate_jittered_backoff
 from ansible.module_utils.six import string_types
 from ansible.module_utils._text import to_bytes, to_native, to_text
@@ -96,6 +97,7 @@ def g_connect(versions):
                 try:
                     data = self._call_galaxy(n_url, method='GET', error_context_msg=error_context_msg, cache=True)
                 except (AnsibleError, GalaxyError, ValueError, KeyError) as err:
+                    print('handler')
                     # Either the URL doesnt exist, or other error. Or the URL exists, but isn't a galaxy API
                     # root (not JSON, no 'available_versions') so try appending '/api/'
                     if n_url.endswith('/api') or n_url.endswith('/api/'):
@@ -190,6 +192,15 @@ def _load_cache(b_cache_path):
     return cache
 
 
+@retry_with_metadata(max_tries=6, retry_pause=3)
+def open_url_wrapped(*args,**kwargs):
+    retry_metadata = kwargs.get("_retry_metadata")
+    if retry_metadata is not None:
+        del kwargs["_retry_metadata"]
+    print(f"Calling open_url: {retry_metadata=} {args=} {kwargs=}")
+    return open_url(*args,**kwargs)
+
+
 def _urljoin(*args):
     return '/'.join(to_native(a, errors='surrogate_or_strict').strip('/') for a in args + ('',) if a)
 
@@ -213,6 +224,7 @@ class GalaxyError(AnsibleError):
             galaxy_msg = err_info.get('message', http_error.reason)
             code = err_info.get('code', 'Unknown')
             full_error_msg = u"%s (HTTP Code: %d, Message: %s Code: %s)" % (message, self.http_code, galaxy_msg, code)
+            print(f'failed v2: {full_error_msg}')
         elif 'v3' in url_split:
             errors = err_info.get('errors', [])
             if not errors:
@@ -226,10 +238,14 @@ class GalaxyError(AnsibleError):
                 message_lines.append(message_line)
 
             full_error_msg = "%s %s" % (message, ', '.join(message_lines))
+            print('failed v3')
         else:
             # v1 and unknown API endpoints
             galaxy_msg = err_info.get('default', http_error.reason)
             full_error_msg = u"%s (HTTP Code: %d, Message: %s)" % (message, self.http_code, galaxy_msg)
+            print('failed v1')
+
+        traceback.print_stack()
 
         self.message = to_native(full_error_msg)
 
@@ -462,7 +478,7 @@ class GalaxyAPI:
         args = urlencode({"github_token": github_token})
 
         try:
-            resp = open_url(url, data=args, validate_certs=self.validate_certs, method="POST", http_agent=user_agent(), timeout=self._server_timeout)
+            resp = open_url_wrapped(url, data=args, validate_certs=self.validate_certs, method="POST", http_agent=user_agent(), timeout=self._server_timeout)
         except HTTPError as e:
             raise GalaxyError(e, 'Attempting to authenticate to galaxy')
         except Exception as e:
@@ -868,6 +884,7 @@ class GalaxyAPI:
         try:
             data = self._call_galaxy(versions_url, error_context_msg=error_context_msg, cache=True, cache_key=cache_key)
         except GalaxyError as err:
+            print('Re-rasing not 404')
             if err.http_code != 404:
                 raise
             # v3 doesn't raise a 404 so we need to mimick the empty response from APIs that do.

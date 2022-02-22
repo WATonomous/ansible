@@ -121,6 +121,24 @@ def retry(retries=None, retry_pause=1):
         return retried
     return wrapper
 
+def retry_with_metadata(max_tries=1, retry_pause=1.0):
+    """Retry decorator"""
+    def wrapper(f):
+        def retried(*args, **kwargs):
+            try_count = 0
+            while True:
+                try:
+                    return f(*args, **kwargs, _retry_metadata={'try': try_count, 'max_tries': max_tries})
+                except Exception:
+                    pass
+                try_count += 1
+                if try_count >= max_tries:
+                    raise Exception("Retry limit exceeded: %d" % max_tries)
+                time.sleep(retry_pause)
+
+        return retried
+    return wrapper
+
 
 def generate_jittered_backoff(retries=10, delay_base=3, delay_threshold=60):
     """The "Full Jitter" backoff strategy.
