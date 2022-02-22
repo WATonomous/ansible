@@ -41,6 +41,7 @@ RETRY_HTTP_ERROR_CODES = {  # TODO: Allow user-configuration
     HTTPStatus.TOO_MANY_REQUESTS,
     520,  # Galaxy rate limit error code (Cloudflare unknown error)
     HTTPStatus.BAD_GATEWAY,  # Common error from galaxy that may represent any number of transient backend issues
+    HTTPStatus.GATEWAY_TIMEOUT,  # Galaxy Gateway Timeout: https://github.com/ansible/galaxy/issues/2302#issuecomment-1047370516
 }
 
 
