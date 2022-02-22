@@ -15,6 +15,7 @@ import stat
 import tarfile
 import time
 import threading
+import traceback
 
 from urllib.error import HTTPError
 from urllib.parse import quote as urlquote, urlencode, urlparse, parse_qs, urljoin
@@ -22,7 +23,7 @@ from urllib.parse import quote as urlquote, urlencode, urlparse, parse_qs, urljo
 from ansible import constants as C
 from ansible.errors import AnsibleError
 from ansible.galaxy.user_agent import user_agent
-from ansible.module_utils.api import retry_with_delays_and_condition
+from ansible.module_utils.api import retry_with_delays_and_condition, retry
 from ansible.module_utils.api import generate_jittered_backoff
 from ansible.module_utils.six import string_types
 from ansible.module_utils._text import to_bytes, to_native, to_text
@@ -60,7 +61,9 @@ def is_rate_limit_exception(exception):
     # Note: cloud.redhat.com masks rate limit errors with 403 (Forbidden) error codes.
     # Since 403 could reflect the actual problem (such as an expired token), we should
     # not retry by default.
-    return isinstance(exception, GalaxyError) and exception.http_code in RETRY_HTTP_ERROR_CODES
+    ret = isinstance(exception, GalaxyError) and exception.http_code in RETRY_HTTP_ERROR_CODES
+    print(f"is_rate_limit: {ret}")
+    return ret
 
 
 def g_connect(versions):
@@ -86,6 +89,7 @@ def g_connect(versions):
                 try:
                     data = self._call_galaxy(n_url, method='GET', error_context_msg=error_context_msg, cache=True)
                 except (AnsibleError, GalaxyError, ValueError, KeyError) as err:
+                    print('handler')
                     # Either the URL doesnt exist, or other error. Or the URL exists, but isn't a galaxy API
                     # root (not JSON, no 'available_versions') so try appending '/api/'
                     if n_url.endswith('/api') or n_url.endswith('/api/'):
@@ -179,6 +183,11 @@ def _load_cache(b_cache_path):
 
     return cache
 
+@retry(retries=6,retry_pause=3)
+def open_url_wrapped(*args,**kwargs):
+    print("Calling open_url")
+    return open_url(*args,**kwargs)
+
 
 def _urljoin(*args):
     return '/'.join(to_native(a, errors='surrogate_or_strict').strip('/') for a in args + ('',) if a)
@@ -203,6 +212,7 @@ class GalaxyError(AnsibleError):
             galaxy_msg = err_info.get('message', http_error.reason)
             code = err_info.get('code', 'Unknown')
             full_error_msg = u"%s (HTTP Code: %d, Message: %s Code: %s)" % (message, self.http_code, galaxy_msg, code)
+            print(f'failed v2: {full_error_msg}')
         elif 'v3' in url_split:
             errors = err_info.get('errors', [])
             if not errors:
@@ -216,10 +226,14 @@ class GalaxyError(AnsibleError):
                 message_lines.append(message_line)
 
             full_error_msg = "%s %s" % (message, ', '.join(message_lines))
+            print('failed v3')
         else:
             # v1 and unknown API endpoints
             galaxy_msg = err_info.get('default', http_error.reason)
             full_error_msg = u"%s (HTTP Code: %d, Message: %s)" % (message, self.http_code, galaxy_msg)
+            print('failed v1')
+
+        traceback.print_stack()
 
         self.message = to_native(full_error_msg)
 
@@ -385,7 +399,7 @@ class GalaxyAPI:
 
         try:
             display.vvvv("Calling Galaxy at %s" % url)
-            resp = open_url(to_native(url), data=args, validate_certs=self.validate_certs, headers=headers,
+            resp = open_url_wrapped(to_native(url), data=args, validate_certs=self.validate_certs, headers=headers,
                             method=method, timeout=self.server_timeout, http_agent=user_agent(), follow_redirects='safe')
         except HTTPError as e:
             raise GalaxyError(e, error_context_msg)
@@ -444,7 +458,7 @@ class GalaxyAPI:
         """
         url = _urljoin(self.api_server, self.available_api_versions['v1'], "tokens") + '/'
         args = urlencode({"github_token": github_token})
-        resp = open_url(url, data=args, validate_certs=self.validate_certs, method="POST", http_agent=user_agent(), timeout=self.server_timeout)
+        resp = open_url_wrapped(url, data=args, validate_certs=self.validate_certs, method="POST", http_agent=user_agent(), timeout=self.server_timeout)
         data = json.loads(to_text(resp.read(), errors='surrogate_or_strict'))
         return data
 
@@ -844,6 +858,7 @@ class GalaxyAPI:
         try:
             data = self._call_galaxy(versions_url, error_context_msg=error_context_msg, cache=True)
         except GalaxyError as err:
+            print('Re-rasing not 404')
             if err.http_code != 404:
                 raise
             # v3 doesn't raise a 404 so we need to mimick the empty response from APIs that do.
